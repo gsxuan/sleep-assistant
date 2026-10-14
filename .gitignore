@@ -1,0 +1,10 @@
+# Build artifacts / 编译产物
+CaffeinateToggle
+iconrender
+menubar
+*.o
+*.iconset/
+AppIcon.iconset/
+
+# OS / editor
+.DS_Store

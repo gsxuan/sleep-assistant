@@ -1,0 +1,36 @@
+#!/bin/sh
+# caffeinate-toggle-helper —— 由「休眠助手」调用，免密执行 launchd system 域开关
+# 仅做固定两件事，绝不接受任意命令，配合 /etc/sudoers.d/caffeinate-toggle 的
+# NOPASSWD 授权，实现「授权一次、之后永不再问密码」。
+#
+# 用法:
+#   caffeinate-toggle-helper enable <src-plist>
+#   caffeinate-toggle-helper disable
+set -e
+
+LABEL="com.think.caffeinate"
+RUNDIR="/Library/Application Support/CaffeinateToggle"
+DST="$RUNDIR/$LABEL.plist"
+
+case "$1" in
+  enable)
+    SRC="$2"
+    [ -f "$SRC" ] || exit 2
+    mkdir -p "$RUNDIR"
+    cp -f "$SRC" "$DST"
+    chown root:wheel "$DST"
+    chmod 644 "$DST"
+    # 先摘掉可能残留的同名任务，再注册（幂等）
+    /bin/launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+    /bin/launchctl bootstrap system "$DST"
+    ;;
+  disable)
+    /bin/launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+    /bin/rm -f "$DST"
+    /usr/bin/pkill -x caffeinate >/dev/null 2>&1 || true
+    ;;
+  *)
+    echo "usage: $0 enable <plist> | disable" >&2
+    exit 1
+    ;;
+esac
