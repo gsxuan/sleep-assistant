@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var statusLine: NSMenuItem!
     private var powerLine: NSMenuItem!
+    private var sessionLine: NSMenuItem!
     private var toggleItem: NSMenuItem!
     private var lastSleepItem: NSMenuItem!
     private var lastWakeItem: NSMenuItem!
@@ -47,6 +48,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var sleepFetchInProgress = false
     // 最近一次探测到的「其他进程防睡持有者」，供「一键结束」用
     private var currentHolders: [Holder] = []
+
+    // 计时：阻止休眠时长（以 caffeinate 进程已运行秒数为锚，重启后仍准确）+ 合盖计时
+    private var preventBase: (elapsed: TimeInterval, at: Date)?
+    private var lidClosed = false
+    private var lidClosedAt: Date?
+    private var lidOpenedAt: Date?
 
     private var guiDomain: String { "gui/\(getuid())/\(LABEL)" }
     private var systemDomain: String { "system/\(LABEL)" }
@@ -76,6 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.fetchSleepInBackground()
         }
+        // 合盖状态轮询（约 15ms/次，捕捉开合盖时刻）
+        lidClosed = currentLidClosed()
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.pollLid()
+        }
+        // 计时刷新（纯计算，不起子进程）
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.updateSession()
+        }
     }
 
     private func buildMenu() {
@@ -89,6 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         powerLine = NSMenuItem(title: "电源：检测中…", action: nil, keyEquivalent: "")
         powerLine.isEnabled = false
         menu.addItem(powerLine)
+
+        sessionLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        sessionLine.isEnabled = false
+        sessionLine.isHidden = true
+        menu.addItem(sessionLine)
 
         menu.addItem(.separator())
 
@@ -306,6 +327,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = makeIcon(on: isOn)
         powerLine.title = readPowerStatus()
 
+        // 阻止休眠时长锚点：读 caffeinate 进程已运行秒数（重启后仍准确）
+        preventBase = isOn ? preventionBaseline() : nil
+        updateSession()
+
         autostartItem.state = autostartEnabled() ? .on : .off
 
         othersItem.title = "其他进程防睡 (\(holders.count))"
@@ -393,6 +418,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return parts.isEmpty ? "电源：未知" : parts.joined(separator: " · ")
     }
 
+    // MARK: - 计时：阻止休眠时长 / 合盖计时
+
+    private func currentLidClosed() -> Bool {
+        let (_, ioreg) = run("/usr/sbin/ioreg", ["-r", "-d", "1", "-n", "IOPMrootDomain"])
+        return ioreg.contains("\"AppleClamshellState\" = Yes")
+    }
+
+    /// 以 caffeinate 进程「已运行秒数」为锚（ps etimes，免日期解析，重启后仍准确）
+    private func preventionBaseline() -> (elapsed: TimeInterval, at: Date)? {
+        let (_, pids) = run("/bin/sh", ["-c", "pgrep -x caffeinate | head -1"])
+        let pid = pids.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pid.isEmpty else { return nil }
+        let (_, es) = run("/bin/ps", ["-p", pid, "-o", "etimes="])
+        guard let secs = Double(es.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        return (secs, Date())
+    }
+
+    @objc private func pollLid() {
+        let closed = currentLidClosed()
+        if closed != lidClosed {
+            lidClosed = closed
+            if closed { lidClosedAt = Date() } else { lidOpenedAt = Date() }
+        }
+        updateSession()
+    }
+
+    private func updateSession() {
+        guard isOn else {
+            sessionLine.isHidden = true
+            return
+        }
+        sessionLine.isHidden = false
+        var parts: [String] = []
+        if let b = preventBase {
+            let cur = b.elapsed + Date().timeIntervalSince(b.at)
+            parts.append("阻止休眠 \(fmtDur(cur))")
+        } else {
+            parts.append("阻止休眠 …")
+        }
+        if lidClosed {
+            if let c = lidClosedAt {
+                parts.append("合盖 \(fmtDur(Date().timeIntervalSince(c)))")
+            } else {
+                parts.append("合盖中")
+            }
+        } else {
+            parts.append("未合盖")
+        }
+        sessionLine.title = parts.joined(separator: " · ")
+    }
+
+    private func fmtDur(_ secs: TimeInterval) -> String {
+        let s = Int(secs)
+        if s < 0 { return "0 秒" }
+        if s < 60 { return "\(s) 秒" }
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        if h > 0 { return "\(h) 时 \(m) 分" }
+        return "\(m) 分"
+    }
+
     // MARK: - 开机自动启动（登录项）
 
     private var autostartPlistURL: URL {
@@ -455,6 +541,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.lastSleepFetch = Date()
                 self.cachedSleep = info
                 self.applySleepInfo(info)
+                // 当前合盖但还没观测到合盖时刻 → 用日志里最近一次合盖事件补（仅近期可信）
+                if self.lidClosed, self.lidClosedAt == nil,
+                   let lc = info.lastClamshell, Date().timeIntervalSince(lc) < 12 * 3600 {
+                    self.lidClosedAt = lc
+                    self.updateSession()
+                }
             }
         }
     }
@@ -506,11 +598,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct SleepInfo {
         let lastSleep: SleepEvent?
         let lastWake: Date?
+        let lastClamshell: Date?
         let recent: [SleepEvent]
-        static let empty = SleepInfo(lastSleep: nil, lastWake: nil, recent: [])
+        static let empty = SleepInfo(lastSleep: nil, lastWake: nil, lastClamshell: nil, recent: [])
     }
 
-    /// 返回：上次休眠、上次唤醒、最近若干次休眠（新→旧）
+    /// 返回：上次休眠、上次唤醒、最近一次合盖、最近若干次休眠（新→旧）
     private func readSleepWake() -> SleepInfo {
         // 只取含休眠/唤醒关键字的行，并截尾以控制体量
         let cmd = "pmset -g log | grep -E 'Entering (Sleep|DarkWake) state due to|WakeTime:' | tail -4000"
@@ -520,6 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let df = makePMDateFormatter()
         var sleeps: [SleepEvent] = []
         var lastWake: Date?
+        var lastClamshell: Date?
 
         for line in text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
             if line.contains("WakeTime:") {
@@ -528,11 +622,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if let ev = parseSleepLine(line, df: df) {
                 sleeps.append(ev)
+                if ev.reason == "Clamshell Sleep" { lastClamshell = ev.date }
             }
         }
 
         let recent = sleeps.suffix(8).reversed()
-        return SleepInfo(lastSleep: sleeps.last, lastWake: lastWake, recent: Array(recent))
+        return SleepInfo(lastSleep: sleeps.last, lastWake: lastWake,
+                         lastClamshell: lastClamshell, recent: Array(recent))
     }
 
     private func parseSleepLine(_ line: String, df: DateFormatter) -> SleepEvent? {

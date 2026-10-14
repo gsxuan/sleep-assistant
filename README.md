@@ -22,6 +22,10 @@ Released under the [MIT License](LICENSE).
   why the machine isn't sleeping even when this app is off.
 - 🕒 **Recent sleep/wake info** — last sleep, last wake, and the last several sleep events
   (parsed from `pmset -g log`).
+- ⏱️ **Live timers** — how long sleep has been prevented (anchored on the `caffeinate`
+  process elapsed time, so it stays correct across app restarts) and how long the lid has
+  been closed (polls `AppleClamshellState`, records the open/close moment; seeds the close
+  time from the log if the app starts already-closed).
 - 🔋 **Power / battery / lid status** at a glance.
 - 🚀 **One-tap release** of other processes' sleep assertions (kill to release).
 - ▶️ **Optional launch-at-login** toggle (off by default).
