@@ -751,8 +751,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func drawMoon(on: Bool) {
-        // 弯月 = 外圆 − 偏移内圆。先填外圆，再用 clear 合成把内圆擦成透明，
-        // 得到干净月牙（even-odd / 反向路径在 AppKit 里会被归一化，不可靠）。
+        // 弯月 = 外圆 − 偏移内圆。
+        //   实心（不休眠中）：填外圆 + clear 内圆。
+        //   空心（正常休眠）：只描月牙轮廓（两圆交点构成的外弧 + 内弧）。
+        // 用 labelColor/secondaryLabelColor，随菜单栏深浅色自动适配；靠「实心/空心」区分状态。
         let R: CGFloat = 7.0      // 外圆半径
         let rIn: CGFloat = 6.2    // 内圆略小，才会切出细月牙
         let outerC = NSPoint(x: 9.0, y: 9.0)
@@ -762,19 +764,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
         }
 
-        let fill: NSColor = on
-            ? NSColor(calibratedRed: 1.00, green: 0.70, blue: 0.16, alpha: 1)
-            : NSColor(calibratedWhite: 0.45, alpha: 1)
-        fill.setFill()
-        disk(outerC, R).fill()
+        let color: NSColor = on ? NSColor.labelColor : NSColor.secondaryLabelColor
 
-        if let ctx = NSGraphicsContext.current {
-            ctx.saveGraphicsState()
-            ctx.compositingOperation = .clear
-            NSColor.black.setFill()
-            disk(innerC, rIn).fill()
-            ctx.restoreGraphicsState()
+        if on {
+            color.setFill()
+            disk(outerC, R).fill()
+            if let ctx = NSGraphicsContext.current {
+                ctx.saveGraphicsState()
+                ctx.compositingOperation = .clear
+                NSColor.black.setFill()
+                disk(innerC, rIn).fill()
+                ctx.restoreGraphicsState()
+            }
+        } else if let path = crescentOutline(O: outerC, R: R, I: innerC, r: rIn) {
+            color.setStroke()
+            path.lineWidth = 1.25
+            path.lineJoinStyle = .round
+            path.lineCapStyle = .round
+            path.stroke()
+        } else {
+            // 兜底：两圆不相交时退化为描外圆
+            color.setStroke()
+            let p = disk(outerC, R)
+            p.lineWidth = 1.25
+            p.stroke()
         }
+    }
+
+    /// 构造月牙轮廓路径（外弧 + 内弧），用于「空心」图标。
+    /// 用折线采样两段弧，避免 appendArc 顺/逆时针与大/小弧的二义性（实测不可靠）。
+    private func crescentOutline(O: NSPoint, R: CGFloat, I: NSPoint, r: CGFloat) -> NSBezierPath? {
+        let dx = I.x - O.x, dy = I.y - O.y
+        let d = hypot(dx, dy)
+        guard d > 0.01, d < R + r - 0.01, d > abs(R - r) + 0.01 else { return nil }
+        let a = (R * R - r * r + d * d) / (2 * d)     // O 到根轴的距离
+        let h2 = R * R - a * a
+        guard h2 > 0.01 else { return nil }
+        let h = sqrt(h2)
+        let ux = dx / d, uy = dy / d                  // O→I 单位向量
+        let M = NSPoint(x: O.x + a * ux, y: O.y + a * uy)
+        let px = -uy, py = ux                          // 垂直单位向量
+        let P1 = NSPoint(x: M.x + h * px, y: M.y + h * py)
+        let P2 = NSPoint(x: M.x - h * px, y: M.y - h * py)
+
+        let aO1 = atan2(P1.y - O.y, P1.x - O.x)
+        let aO2 = atan2(P2.y - O.y, P2.x - O.x)
+        let aI1 = atan2(P1.y - I.y, P1.x - I.x)
+        let aI2 = atan2(P2.y - I.y, P2.x - I.x)
+        // 外弧经过「离内圆最远的点」F = O - u*R；内弧经过「离外圆最近的点」G = I - u*r。
+        let aF = atan2(-uy, -ux)
+        let aG = atan2((I.y - uy * r) - I.y, (I.x - ux * r) - I.x)   // = atan2(-uy, -ux)
+
+        let outer = arcSample(O, R, aO1, aO2, through: aF)
+        let inner = arcSample(I, r, aI2, aI1, through: aG)
+
+        let path = NSBezierPath()
+        path.move(to: outer[0])
+        for p in outer.dropFirst() { path.line(to: p) }
+        for p in inner { path.line(to: p) }
+        path.close()
+        return path
+    }
+
+    /// 从 a0 到 a1 沿圆周采样若干点，方向取「经过 aRef」的那一侧（保证取到正确的大/小弧）。
+    private func arcSample(_ c: NSPoint, _ R: CGFloat, _ a0: CGFloat, _ a1: CGFloat,
+                           through aRef: CGFloat, steps: Int = 56) -> [NSPoint] {
+        func norm(_ a: CGFloat) -> CGFloat {
+            var x = a.truncatingRemainder(dividingBy: CGFloat.pi * 2)
+            if x < 0 { x += CGFloat.pi * 2 }
+            return x
+        }
+        let s = norm(a0), e = norm(a1), ref = norm(aRef)
+        let ccw: Bool = {
+            if s <= e { return ref >= s && ref <= e }
+            return ref >= s || ref <= e
+        }()
+        var pts: [NSPoint] = []
+        for i in 0...steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            var delta = ccw ? (e - s) : (s - e)
+            if delta < 0 { delta += CGFloat.pi * 2 }
+            let ang = ccw ? (s + delta * t) : (s - delta * t)
+            pts.append(NSPoint(x: c.x + R * cos(ang), y: c.y + R * sin(ang)))
+        }
+        return pts
     }
 }
 
