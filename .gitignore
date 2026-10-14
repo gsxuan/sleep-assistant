@@ -8,3 +8,11 @@ AppIcon.iconset/
 
 # OS / editor
 .DS_Store
+
+# .NET build output (Windows)
+bin/
+obj/
+out/
+publish/
+*.user
+windows/csharp/*.zip
