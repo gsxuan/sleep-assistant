@@ -1,13 +1,28 @@
 # 休眠助手 · Sleep Assistant
 
-A tiny macOS **menu-bar** utility that keeps your Mac awake — including when the
-lid is closed — so long-running tasks (downloads, builds, remote sessions,
-renders) don't get interrupted by sleep.
+Keeps your laptop awake — **including with the lid closed** — so long-running tasks
+(downloads, builds, remote sessions, renders) aren't interrupted by sleep.
+One click on the crescent-moon tray icon toggles "no-sleep" on/off.
 
-A single click on the crescent-moon menu-bar icon toggles "no-sleep" on/off.
-Built with **Swift + AppKit**, no third-party dependencies.
+让笔记本**合盖也不休眠**、任务不被打断的菜单栏/托盘小工具。单击弯月图标即可切换。
+
+**Two platforms / 双平台：**
+- 🍎 **macOS** (Swift + AppKit, menu-bar app) — source in the repo root, see below.
+- 🪟 **Windows** (C# / .NET 8 / WinForms, tray app) — see [`windows/csharp/`](windows/csharp/).
+
+Both share the same product logic and the "**solid = no-sleep / hollow = normal sleep**" crescent icon.
 
 Released under the [MIT License](LICENSE).
+
+## Download / 下载
+
+Grab a prebuilt binary from [**Releases**](https://github.com/gsxuan/sleep-assistant/releases/latest):
+
+| Platform | Asset | Notes |
+|---|---|---|
+| macOS (Apple Silicon) | `SleepAssistant-*-macOS.zip` | unzip → drag `休眠助手.app` to Applications |
+| Windows (x64) | `SleepAssistant-*-win-x64.zip` | unzip → run `SleepAssistant.exe` (self-contained, no .NET needed) |
+
 
 > macOS 菜单栏常驻小工具：一键让 Mac **合盖也不休眠**，任务不被睡眠打断。
 > Swift + AppKit 编写，零第三方依赖，MIT 协议开源。
